@@ -32,6 +32,7 @@ class SemanticChunker(BaseChunker):
     def __init__(
         self,
         tokenizer: Union[str, Any] = "gpt2",
+        language: str = "auto",
         embedding_model: Union[str, Any] = "sentence-transformers/all-MiniLM-L6-v2",
         similarity_threshold: Optional[float] = None,
         similarity_percentile: Optional[float] = None,
@@ -44,6 +45,7 @@ class SemanticChunker(BaseChunker):
 
         Args:
             tokenizer: Tokenizer for counting tokens
+            language: Language of the Chunker
             embedding_model: Name of the sentence-transformers model to load
             max_chunk_size: Maximum tokens allowed per chunk
             similarity_threshold: Absolute threshold for semantic similarity (0-1)
@@ -79,6 +81,7 @@ class SemanticChunker(BaseChunker):
         if sentence_mode not in ["heuristic", "spacy"]:
             raise ValueError("sentence_mode must be 'heuristic' or 'spacy'")
 
+        self.language = language
         self.max_chunk_size = max_chunk_size
         self.similarity_threshold = similarity_threshold
         self.similarity_percentile = similarity_percentile
@@ -93,6 +96,19 @@ class SemanticChunker(BaseChunker):
             )
         else:
             self.embedding_model = embedding_model
+
+        # Fix max_chunk_size to fit embedding model
+        if self.embedding_model.max_seq_length < self.max_chunk_size:
+            self.max_chunk_size = self.embedding_model.max_seq_length
+            warnings.warn(
+                f"Model '{embedding_model}' has a max_seq_length of {self.embedding_model.max_seq_length}, "
+                f"which is smaller than max_chunk_size of {self.max_chunk_size}. "
+                f"Setting max_chunk_size to {self.embedding_model.max_seq_length}."
+            )
+        
+        # Initialize pyvi if explicitly requested
+        if self.language == "vi":
+            self._import_pyvi()
 
         # Initialize spaCy if explicitly requested
         if sentence_mode == "spacy":
@@ -113,6 +129,24 @@ class SemanticChunker(BaseChunker):
                     "or use sentence_mode='heuristic' instead."
                 ) from e
 
+    def _import_pyvi(self) -> Any:
+        """Import pyvi library. Imports mentioned inside the class,
+        because it takes too long to import the whole library at the beginning of the file.
+        """
+        # Check if pyvi is available
+        self.PYVI_AVAILABLE = importlib.util.find_spec("pyvi") is not None
+        if self.PYVI_AVAILABLE:
+            try:
+                global pyvi
+                import pyvi
+            except ImportError:
+                self.PYVI_AVAILABLE = False
+                warnings.warn(
+                    "Failed to import pyvi despite it being installed. SemanticChunker with Vietnamese will not work."
+                )
+        else:
+            warnings.warn("pyvi is not installed. SemanticChunker  with Vietnamese will not work.")
+    
     def _import_spacy(self) -> Any:
         """Import spaCy library. Imports mentioned inside the class,
         because it takes too long to import the whole library at the beginning of the file.
@@ -178,9 +212,14 @@ class SemanticChunker(BaseChunker):
     def _split_sentences(self, text: str) -> List[str]:
         """Split text into sentences using specified mode."""
         if self.sentence_mode == "heuristic":
-            return self._split_sentences_heuristic(text)
+            sents = self._split_sentences_heuristic(text)
         else:
-            return self._split_sentences_spacy(text)
+            sents = self._split_sentences_spacy(text)
+
+        if self.language == "vi":
+            sents = [pyvi.ViTokenizer.tokenize(sent) for sent in sents]
+
+        return sents
 
     def _compute_similarity_threshold(self, all_similarities: List[float]) -> float:
         """Compute similarity threshold based on percentile if specified."""
@@ -405,6 +444,7 @@ class SemanticChunker(BaseChunker):
         )
         return (
             f"SemanticChunker(max_chunk_size={self.max_chunk_size}, "
+            f"lang='{self.lang}', "
             f"{threshold_info}, "
             f"initial_sentences={self.initial_sentences}, "
             f"sentence_mode='{self.sentence_mode}')"

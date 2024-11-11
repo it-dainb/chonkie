@@ -44,6 +44,11 @@ semantic = ["sentence-transformers>=2.0.0", "numpy>=1.23.0"]
 all = ["spacy>=3.0.0", "sentence-transformers>=2.0.0", "numpy>=1.23.0"]
 dev = ["pytest>=6.2.0", "transformers>=4.0.0", "tiktoken>=0.2.0", "black>=21.12b0", "isort>=5.10.2", "flake8>=4.0.0", "mypy>=0.910", "pylint>=2.11.1", "pre-commit>=2.15.0"]
 
+# Add a Vietnamese-specific group
+sentence-vi = ["underthesea"]
+semantic-vi = ["pyvi", "sentence-transformers>=2.0.0", "numpy>=1.23.0"]
+all-vi = ["pyvi", "underthesea", "spacy>=3.0.0", "sentence-transformers>=2.0.0", "numpy>=1.23.0"]
+
 [tool.setuptools]
 package-dir = {"" = "src"}
 packages = ["chonkie", "chonkie.chunker"]

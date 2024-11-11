@@ -7,6 +7,7 @@ class SDPMChunker(SemanticChunker):
     def __init__(
         self,
         tokenizer: Union[str, Any] = "gpt2",
+        language: str = "auto",
         embedding_model: Union[str, Any] = "sentence-transformers/all-MiniLM-L6-v2",
         similarity_threshold: float = None,
         similarity_percentile: float = None,
@@ -24,6 +25,7 @@ class SDPMChunker(SemanticChunker):
         """
         super().__init__(
             tokenizer=tokenizer,
+            language=language,
             embedding_model=embedding_model,
             max_chunk_size=max_chunk_size,
             similarity_threshold=similarity_threshold,
@@ -119,6 +121,7 @@ class SDPMChunker(SemanticChunker):
         )
         return (
             f"SPDMChunker(max_chunk_size={self.max_chunk_size}, "
+            f"lang='{self.lang}', "
             f"{threshold_info}, "
             f"initial_sentences={self.initial_sentences}, "
             f"sentence_mode='{self.sentence_mode}', "

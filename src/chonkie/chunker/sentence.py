@@ -54,7 +54,7 @@ class SentenceChunker(BaseChunker):
             raise ValueError("chunk_size must be positive")
         if chunk_overlap >= chunk_size:
             raise ValueError("chunk_overlap must be less than chunk_size")
-        if mode not in ["simple", "spacy"]:
+        if mode not in ["simple", "spacy", "underthesea"]:
             raise ValueError("mode must be either 'simple' or 'spacy'")
         if min_sentences_per_chunk < 1:
             raise ValueError("min_sentences_per_chunk must be at least 1")
@@ -88,8 +88,32 @@ class SentenceChunker(BaseChunker):
                         "Falling back to simple mode."
                     )
                     self.mode = "simple"
+        elif mode == "underthesea":
+            self._import_underthesea()
+            if not self.UNDERTHESA_AVAILABLE:
+                warnings.warn(
+                    "Underthesea not found in environment. To use underthesea mode, install it using:\n"
+                    "pip install underthesea\n"
+                    "Falling back to simple mode."
+                )
+                self.mode = "simple"
+            else:
+                self.mode = "underthesea"
         else:
             self.mode = "simple"
+
+    def _import_underthesea(self):
+        # Check if underthesea is available
+        self.UNDERTHESA_AVAILABLE = importlib.util.find_spec("underthesea") is not None
+        if self.UNDERTHESA_AVAILABLE:
+            try:
+                global underthesea
+                import underthesea
+            except ImportError:
+                self.UNDERTHESA_AVAILABLE = False
+                warnings.warn(
+                    "Failed to import underthesea despite it being installed. Using heuristic mode only."
+                )
 
     def _import_spacy(self):
         # Check if spacy is available
@@ -104,18 +128,7 @@ class SentenceChunker(BaseChunker):
                     "Failed to import spacy despite it being installed. Using heuristic mode only."
                 )
 
-    def _split_into_sentences_via_spacy(self, text: str) -> List[str]:
-        """Split text into sentences via spaCy.
-
-        Args:
-            text: Input text to be split into sentences
-
-        Returns:
-            List of sentences
-        """
-        # Use spaCy's sentence segmentation
-        doc = self.nlp(text)
-        sentences = [sent.text.strip() for sent in doc.sents if sent.text.strip()]
+    def _craft_sentences(self, text: str, sentences: List[str]) -> List[Sentence]:
         token_counts = self._get_token_counts(sentences)
         current_pos = 0
         for sent_text, token_count in zip(sentences, token_counts):
@@ -135,6 +148,35 @@ class SentenceChunker(BaseChunker):
                 )
             )
         return sentences
+
+    def _split_into_sentences_via_spacy(self, text: str) -> List[str]:
+        """Split text into sentences via spaCy.
+
+        Args:
+            text: Input text to be split into sentences
+
+        Returns:
+            List of sentences
+        """
+        # Use spaCy's sentence segmentation
+        doc = self.nlp(text)
+        sents = [sent.text.strip() for sent in doc.sents if sent.text.strip()]
+
+        return text, sents
+
+    def _split_into_sentences_underthesea(self, text: str) -> List[str]:
+        """Split text into sentences via underthesea.
+
+        Args:
+            text: Input text to be split into sentences
+
+        Returns:
+            List of sentences
+        """
+        # Use underthesea's sentence segmentation
+        sents = underthesea.sent_tokenize(text)
+
+        return text, sents
 
     def _split_into_sentences_simple(self, text: str) -> List[str]:
         # Fallback to heuristic mode
@@ -159,25 +201,8 @@ class SentenceChunker(BaseChunker):
         text = re.sub(r"\.{3}\n", "... ", text)  # Ellipsis
 
         sents = [s.strip() for s in text.split("\n") if s.strip()]
-        token_counts = self._get_token_counts(sents)
 
-        sentences = []
-        current_pos = 0
-        for sent, token_count in zip(sents, token_counts):
-            start_idx = text.find(sent, current_pos)
-            end_idx = start_idx + len(sent)
-            current_pos = end_idx
-
-            # Get the token count for the sentence
-            sentences.append(
-                Sentence(
-                    text=sent,
-                    start_index=start_idx,
-                    end_index=end_idx,
-                    token_count=token_count,
-                )
-            )
-        return sentences
+        return text, sents
 
     def _split_into_sentences(self, text: str) -> List[str]:
         """Split text into sentences based on the selected mode.
@@ -189,9 +214,15 @@ class SentenceChunker(BaseChunker):
             List of sentences
         """
         if self.mode == "spacy" and self.nlp is not None:
-            return self._split_into_sentences_via_spacy(text)
+            split_func = self._split_into_sentences_via_spacy
+        elif self.mode == "underthesea":
+            split_func = self._split_into_sentences_underthesea
         elif self.mode == "simple":
-            return self._split_into_sentences_simple(text)
+            split_func = self._split_into_sentences_simple
+
+        text, sents = split_func(text)
+
+        return self._craft_sentences(text, sents)
 
     def _get_token_counts(self, sentences: List[str]) -> List[int]:
         """Get token counts for a list of sentences in batch.
