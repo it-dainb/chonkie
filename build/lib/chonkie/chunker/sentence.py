@@ -2,7 +2,7 @@ import importlib.util
 import re
 import warnings
 from dataclasses import dataclass
-from typing import Any, List, Union, Optional
+from typing import Any, List, Union
 
 from .base import BaseChunker, Chunk
 
@@ -13,13 +13,10 @@ class Sentence:
     start_index: int
     end_index: int
     token_count: int
-    idx: Optional[int]
 
 @dataclass
 class SentenceChunk(Chunk):
     sentences: List[Sentence] = None
-    idx: Optional[int] = None
-    id: Optional[str] = None
 
 class SentenceChunker(BaseChunker):
     def __init__(
@@ -104,8 +101,8 @@ class SentenceChunker(BaseChunker):
         self.UNDERTHESA_AVAILABLE = importlib.util.find_spec("underthesea") is not None
         if self.UNDERTHESA_AVAILABLE:
             try:
-                global sent_tokenize
-                from underthesea import sent_tokenize
+                global underthesea
+                import underthesea
             except ImportError:
                 self.UNDERTHESA_AVAILABLE = False
                 warnings.warn(
@@ -125,19 +122,16 @@ class SentenceChunker(BaseChunker):
                     "Failed to import spacy despite it being installed. Using heuristic mode only."
                 )
 
-    def _craft_sentences(self, text: str, raw_sentences: List[str]) -> List[Sentence]:
-        token_counts = self._get_token_counts(raw_sentences)
+    def _craft_sentences(self, text: str, sentences: List[str]) -> List[Sentence]:
+        token_counts = self._get_token_counts(sentences)
         current_pos = 0
-        sentences = []
-
-        for idx, (sent_text, token_count) in enumerate(zip(raw_sentences, token_counts)):
+        for sent_text, token_count in zip(sentences, token_counts):
             if not sent_text:
                 continue
-            
             start_idx = text.find(sent_text, current_pos)
             end_idx = start_idx + len(sent_text)
             current_pos = end_idx
-            
+
             # Get the token count for the sentence
             sentences.append(
                 Sentence(
@@ -145,12 +139,11 @@ class SentenceChunker(BaseChunker):
                     start_index=start_idx,
                     end_index=end_idx,
                     token_count=token_count,
-                    idx=idx
                 )
             )
         return sentences
 
-    def _split_into_sentences_via_spacy(self, text: str) -> List[str]:
+    def _split_into_sentences_via_spacy(self, text: str) -> tuple[str, List[str]]:
         """Split text into sentences via spaCy.
 
         Args:
@@ -161,11 +154,11 @@ class SentenceChunker(BaseChunker):
         """
         # Use spaCy's sentence segmentation
         doc = self.nlp(text)
-        sents = [sent.text for sent in doc.sents]
+        sents = [sent.text.strip() for sent in doc.sents if sent.text.strip()]
 
-        return sents
+        return text, sents
 
-    def _split_into_sentences_underthesea(self, text: str) -> List[str]:
+    def _split_into_sentences_underthesea(self, text: str) -> tuple[str, List[str]]:
         """Split text into sentences via underthesea.
 
         Args:
@@ -175,11 +168,11 @@ class SentenceChunker(BaseChunker):
             List of sentences
         """
         # Use underthesea's sentence segmentation
-        sents = sent_tokenize(text)
+        sents = underthesea.sent_tokenize(text)
 
-        return sents
+        return text, sents
 
-    def _split_into_sentences_simple(self, text: str) -> List[str]:
+    def _split_into_sentences_simple(self, text: str) -> tuple[str, List[str]]:
         # Fallback to heuristic mode
         # Simple rule-based sentence splitting with common abbreviations
         text = re.sub(
@@ -201,12 +194,9 @@ class SentenceChunker(BaseChunker):
         text = re.sub(r"(\d+)\.\n(\d+)", r"\1.\2", text)  # Decimal numbers
         text = re.sub(r"\.{3}\n", "... ", text)  # Ellipsis
 
-        sents = [s for s in text.split("\n")]
+        sents = [s.strip() for s in text.split("\n") if s.strip()]
 
-        return sents
-
-    def _preprocess_sentences(self, sents: list[str]) -> list[str]:
-        return [s.strip() for s in sents if s.strip()]
+        return text, sents
 
     def _split_into_sentences(self, text: str) -> List[Sentence]:
         """Split text into sentences based on the selected mode.
@@ -224,10 +214,9 @@ class SentenceChunker(BaseChunker):
         elif self.mode == "simple":
             split_func = self._split_into_sentences_simple
 
-        sents = split_func(text)
-        clean_sents = self._preprocess_sentences(sents)
+        text, sents = split_func(text)
 
-        return self._craft_sentences(text, clean_sents)
+        return self._craft_sentences(text, sents)
 
     def _get_token_counts(self, sentences: List[str]) -> List[int]:
         """Get token counts for a list of sentences in batch.
@@ -243,7 +232,7 @@ class SentenceChunker(BaseChunker):
         return [len(encoded) for encoded in encoded_sentences]
 
     def _create_chunk(
-        self, sentences: List[Sentence], token_count: int, idx: int = None, id: str = None
+        self, sentences: List[Sentence], start_idx: int, token_count: int
     ) -> Chunk:
         """Create a chunk from a list of sentences.
 
@@ -258,15 +247,13 @@ class SentenceChunker(BaseChunker):
         chunk_text = " ".join([sentence.text for sentence in sentences])
         return SentenceChunk(
             text=chunk_text,
-            start_index=sentences[0].start_index,
-            end_index=sentences[-1].end_index,
+            start_index=start_idx,
+            end_index=start_idx + token_count,
             token_count=token_count,
             sentences=sentences,
-            id=id,
-            idx=idx
         )
 
-    def chunk(self, text: str, id: str = None) -> List[Chunk]:
+    def chunk(self, text: str) -> List[Chunk]:
         """Split text into overlapping chunks based on sentences while respecting token limits.
 
         Args:
@@ -284,6 +271,7 @@ class SentenceChunker(BaseChunker):
         chunks = []
         current_sentences = []
         current_tokens = 0
+        last_chunk_end = 0
 
         for i, (sentence, token_count) in enumerate(zip(sentences, token_counts)):
             # Calculate total tokens if we add this sentence
@@ -304,7 +292,7 @@ class SentenceChunker(BaseChunker):
                 # Sentence would exceed limits, create chunk if we have enough sentences
                 if len(current_sentences) >= self.min_sentences_per_chunk:
                     chunk = self._create_chunk(
-                        current_sentences, current_tokens, len(chunks), id
+                        current_sentences, last_chunk_end, current_tokens
                     )
                     chunks.append(chunk)
 
@@ -334,6 +322,8 @@ class SentenceChunker(BaseChunker):
                         current_sentences = []
                         current_tokens = 0
 
+                    last_chunk_end += current_tokens
+
                 # Add current sentence (either after creating chunk or when forced to meet minimum)
                 current_sentences.append(sentence)
                 current_tokens = (
@@ -345,7 +335,7 @@ class SentenceChunker(BaseChunker):
         # Handle remaining sentences
         if current_sentences:
             chunk = self._create_chunk(
-                current_sentences, current_tokens, len(chunks), id
+                current_sentences, last_chunk_end, current_tokens
             )
             chunks.append(chunk)
 

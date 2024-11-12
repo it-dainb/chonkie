@@ -1,48 +1,44 @@
-from typing import Any, List, Union, Optional
+from typing import Any, List, Union
 import warnings
 
-from .semantic import SemanticChunk, SemanticChunker
+from .semantic import SemanticChunk, SemanticChunker, Sentence
 
 
 class SDPMChunker(SemanticChunker):
     def __init__(
         self,
         tokenizer: Union[str, Any] = "gpt2",
+        language: str = "auto",
         embedding_model: Union[str, Any] = "sentence-transformers/all-MiniLM-L6-v2",
         appending_threshold: float = None,
         merging_threshold: float = None,
         appending_percentile: float = None,
-        chunk_size: int = 512,
-        min_sentences_per_chunk: int = 1,
+        max_chunk_size: int = 512,
+        initial_sentences: int = 1,
         sentence_mode: str = "heuristic",
         spacy_model: str = "en_core_web_sm",
         skip_window: int = 1,  # How many chunks to skip when looking for similarities
-        word_segmentation: bool = False,
-        sentence_transformers_kargs: dict = {},
     ):
         """Initialize the SDPMChunker.
 
         Args:
             Same as SemanticChunker, plus:
+            appending_threshold: Threshold for appending similar groups
+            appending_percentile: Percentile threshold for appending similar groups
             merging_threshold: Threshold for merging similar groups
             skip_window: Number of chunks to skip when looking for similarities
         """
         super().__init__(
             tokenizer=tokenizer,
+            language=language,
             embedding_model=embedding_model,
-            chunk_size=chunk_size,
-            appending_threshold=appending_threshold,
-            appending_percentile=appending_percentile,
-            min_sentences_per_chunk=min_sentences_per_chunk,
+            max_chunk_size=max_chunk_size,
+            similarity_threshold=appending_threshold,
+            similarity_percentile=appending_percentile,
+            initial_sentences=initial_sentences,
             sentence_mode=sentence_mode,
             spacy_model=spacy_model,
-            word_segmentation=word_segmentation,
-            sentence_transformers_kargs=sentence_transformers_kargs,
         )
-
-        if skip_window < 0:
-            raise ValueError("Skip window must be >= 0")
-        
         self.skip_window = skip_window
         self.merging_threshold = merging_threshold
 
@@ -55,13 +51,15 @@ class SDPMChunker(SemanticChunker):
     def _merge_chunks(self, chunks: List[SemanticChunk]) -> SemanticChunk:
         """Merge the groups together"""
         merged_sents = []
+        merged_scores = []
         for chunk in chunks:
             merged_sents.extend(chunk.sentences)
+            merged_scores.extend(chunk.scores)
             
-        return self._create_chunk(merged_sents)
+        return self._create_chunk(merged_sents, merged_scores)
 
     def _skip_and_merge(
-        self, chunks: List[SemanticChunk], id: str
+        self, chunks: List[SemanticChunk]
     ) -> List[SemanticChunk]:
         """Merge similar groups considering skip window."""
         if len(chunks) <= 1:
@@ -72,9 +70,7 @@ class SDPMChunker(SemanticChunker):
 
         while chunks:
             if len(chunks) == 1:
-                merged_chunks.append(
-                    self._create_chunk(chunks[0].sentences, len(merged_chunks), id)
-                )
+                merged_chunks.append(chunks[0])
                 break
 
             # Calculate skip index ensuring it's valid
@@ -99,14 +95,12 @@ class SDPMChunker(SemanticChunker):
                 embeddings.insert(0, self._compute_chunk_embedding(merged))
             else:
                 # No merge possible, move first group to results
-                merged_chunks.append(
-                    self._create_chunk(chunks.pop(0).sentences, len(merged_chunks), id)
-                )
+                merged_chunks.append(chunks.pop(0))
                 embeddings.pop(0)
 
         return merged_chunks
 
-    def chunk(self, text: str, id: str) -> List[SemanticChunk]:
+    def chunk(self, text: str) -> List[SemanticChunk]:
         """Split text into chunks using the SPDM approach.
 
         Args:
@@ -120,17 +114,17 @@ class SDPMChunker(SemanticChunker):
 
         # Prepare sentences with precomputed information
         sentences = self._prepare_sentences(text)
-        if len(sentences) < self.min_sentences_per_chunk:
+        if len(sentences) < self.initial_sentences:
             return [self._create_chunk(sentences)]
 
         # First pass: Group sentences by semantic similarity
-        initial_chunks = self._chunk_sentences(sentences, id)
+        initial_chunks = self._chunk_sentences(sentences)
 
         # Second pass: Merge similar groups with skip window
-        merged_chunks = self._skip_and_merge(initial_chunks, id)
+        merged_chunks = self._skip_and_merge(initial_chunks, self.similarity_threshold)
 
         # Final pass: Split into size-appropriate chunks
-        chunks = self._split_chunks(merged_chunks, id)
+        chunks = self._split_chunks(merged_chunks)
 
         return chunks
 
@@ -141,7 +135,7 @@ class SDPMChunker(SemanticChunker):
             else f"similarity_percentile={self.similarity_percentile}"
         )
         return (
-            f"SPDMChunker(chunk_size={self.chunk_size}, "
+            f"SPDMChunker(max_chunk_size={self.max_chunk_size}, "
             f"lang='{self.lang}', "
             f"{threshold_info}, "
             f"initial_sentences={self.initial_sentences}, "
